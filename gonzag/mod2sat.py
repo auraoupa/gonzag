@@ -27,6 +27,8 @@ class Model2SatTrack:
         if not IsZarr:        
             from .ncio   import GetModel2DVar, GetSatSSH
             #Save2Dfield, SaveTimeSeries        
+        else:
+            from .zarrio import GetModel2DVar, GetSatSSH
             
         (Nj,Ni) = MG.shape
     
@@ -153,11 +155,11 @@ class Model2SatTrack:
         self.lon        = ST.lon
 
         imask = nmp.zeros(Nt,dtype=nmp.int8)
-        imask[nmp.where((vssh_m_bl>-100.) & (vssh_m_bl<100.))] = 1
+        imask[nmp.where((vssh_m_bl>-100.) & (vssh_m_bl<100.) & (vssh_s>-100.) & (vssh_s<100.))] = 1
         
         vssh_m_np = nmp.ma.masked_where( imask==0, vssh_m_np )
         vssh_m_bl = nmp.ma.masked_where( imask==0, vssh_m_bl )
-        vssh_s    = nmp.ma.masked_where( imask==0, vssh_s    )        
+        vssh_s    = nmp.ma.masked_where( imask==0, vssh_s    )
 
         self.mask       = imask
         self.ssh_mod_np = vssh_m_np

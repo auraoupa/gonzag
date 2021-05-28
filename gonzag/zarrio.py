@@ -3,12 +3,13 @@
 #
 #   ///// https://github.com/brodeau/gonzag \\\\\
 #
-#       L. Brodeau, 2021
+#       A. Albert, 2021
 #
 ############################################################################
 
 import numpy as nmp
-from netCDF4 import Dataset, num2date, default_fillvals
+import xarray as xr
+from netCDF4 import num2date, default_fillvals
 from calendar import timegm
 from datetime import datetime as dtm
 from .config import ldebug, ivrb, rmissval
@@ -72,20 +73,17 @@ def GetTimeInfo( ncfile ):
     # Return them + dates as UNIX Epoch time, aka "seconds since 1970-01-01 00:00:00" (float)
     '''
     if ldebug: print(' *** [GetTimeInfo()] Getting calendar/time info in '+ncfile+' ...')
-    id_f = Dataset(ncfile)
-    list_dim = id_f.dimensions.keys()
-    list_var = id_f.variables.keys()
+    id_f = xr.open_zarr(ncfile,decode_cf=False)
     for cd in [ 'time', 'time_counter', 'TIME', 'record', 't', 'none' ]:
-        if cd in list_dim: break
+        if cd in id_f.coords: break
     if cd == 'none': MsgExit('found no time-record dimension in file '+ncfile)
     if ldebug: print('   => time/record dimension is "'+cd+'"')
-    nt = id_f.dimensions[cd].size
-    cv = cd ; # ASSUMING VAR == DIM !!! Is it bad???
-    if not cv in list_var: MsgExit('name of time variable is different than name of time dimension')
-    clndr = id_f.variables[cv]
+    nt = id_f[cd].size
+    clndr = id_f[cd]
+
     dt1 = num2date( clndr[0], clndr.units, clndr.calendar ) ; dt2 = num2date( clndr[nt-1], clndr.units, clndr.calendar )
-    rt1 = ToEpochTime( clndr[0],    clndr.units, clndr.calendar )
-    rt2 = ToEpochTime( clndr[nt-1], clndr.units, clndr.calendar )
+    rt1 = ToEpochTime( clndr[0],    clndr.attrs['units'], clndr.attrs['calendar'] )
+    rt2 = ToEpochTime( clndr[nt-1], clndr.attrs['units'], clndr.attrs['calendar'] )
     id_f.close()
     #
     if ldebug: print('   => first and last time records: ',dt1,'--',dt2,' (UNIX Epoch: ', rt1,'--',rt2,')\n')
@@ -110,13 +108,12 @@ def GetTimeEpochVector( ncfile, kt1=0, kt2=0, isubsamp=1, lquiet=False ):
     '''
     ltalk = ( ldebug and not lquiet )
     cv_t_test = [ 'time', 'time_counter', 'TIME', 'record', 't', 'none' ]
-    id_f = Dataset(ncfile)
-    list_var = id_f.variables.keys()
+    id_f = xr.open_zarr(ncfile,decode_cf=False)
     for cv in cv_t_test:
-        if cv in list_var:
-            clndr = id_f.variables[cv]
-            cunt  = clndr.units
-            ccal  = clndr.calendar
+        if cv in id_f.coords:
+            clndr = id_f[cv]
+            cunt  = clndr.attrs['units']
+            ccal  = clndr.attrs['calendar']
             if ivrb>0 and ltalk: print(' *** [GetTimeEpochVector()] reading "'+cv+'" in '+ncfile+' and converting it to Epoch time...')
             if kt1>0 and kt2>0:
                 if kt1>=kt2: MsgExit('mind the indices when calling GetTimeEpochVector()')
@@ -146,21 +143,20 @@ def GetModelCoor( ncfile, what ):
     elif what == 'longitude': ii = 1
     else: MsgExit(' "what" argument of "GetModelCoor()" only supports "latitude" and "longitude"')
     #
-    id_f = Dataset(ncfile)
-    list_var = list(id_f.variables.keys())
+    id_f = xr.open_zarr(ncfile)
     for ncvar in cv_coor_test[ii,:]:
-        if ncvar in list_var: break
+        if ncvar in id_f.coords: break
     if ncvar == 'none': MsgExit('could not find '+what+' array into model file (possible fix: "cv_coor_test" in "GetModelCoor()")')
-    #
-    nb_dim = len(id_f.variables[ncvar].dimensions)
-    if   nb_dim==1: xwhat = id_f.variables[ncvar][:]
-    elif nb_dim==2: xwhat = id_f.variables[ncvar][:,:]
-    elif nb_dim==3: xwhat = id_f.variables[ncvar][0,:,:]
+   #
+    nb_dim = len(id_f[ncvar].dims)
+    if   nb_dim==1: xwhat = id_f[ncvar][:]
+    elif nb_dim==2: xwhat = id_f[ncvar][:,:]
+    elif nb_dim==3: xwhat = id_f[ncvar][0,:,:]
     else: MsgExit('FIX ME! Model '+what+' has a weird number of dimensions')
     id_f.close()
     if ldebug: print(' *** [GetModelCoor()] Read model '+what+' (variable is "'+ncvar+'", with '+str(nb_dim)+' dimensions!',nmp.shape(xwhat),'\n')
     #
-    return xwhat
+    return xwhat.values
 
 
 def GetModelLSM( ncfile, what ):
@@ -173,19 +169,19 @@ def GetModelLSM( ncfile, what ):
     ncvar = what
     if l_fill_val: ncvar = what[11:]
     #
-    id_f = Dataset(ncfile)
-    ndim = len(id_f.variables[ncvar].dimensions)
+    id_f = xr.open_zarr(ncfile)
+    ndim = len(id_f[ncvar].dims)
     if l_fill_val:
         # Mask is constructed out of variable and its missing value
         if not ndim in [3,4]: MsgExit(ncvar+' is expected to have 3 or 4 dimensions')
-        if ndim==3: xmsk = 1 - id_f.variables[ncvar][0,:,:].mask
-        if ndim==4: xmsk = 1 - id_f.variables[ncvar][0,0,:,:].mask
+        if ndim==3: xmsk = 1 - nmp.isnan(id_f[ncvar][0,:,:])
+        if ndim==4: xmsk = 1 - nmp.isnan(id_f[ncvar][0,0,:,:])
     else:
         # Mask is read in mask file...
-        if   ndim==2: xmsk = id_f.variables[ncvar][:,:]
-        elif ndim==3: xmsk = id_f.variables[ncvar][0,:,:]
-        elif ndim==4: xmsk = id_f.variables[ncvar][0,0,:,:]
-        else: MsgExit('FIX ME! Mask '+ncvar+' has a weird number of dimensions:'+str(ndim))
+        if   ndim==2: xmsk = id_f[ncvar][:,:]
+        elif ndim==3: xmsk = id_f[ncvar][0,:,:]
+        elif ndim==4: xmsk = id_f[ncvar][0,0,:,:]
+        else: MsgExit('FIX ME! Mask '+ncvar+' has a weird number of dimensions:'+str(ndims))
     #
     id_f.close()
     return xmsk.astype(int)
@@ -196,12 +192,12 @@ def GetModel2DVar( ncfile, ncvar, kt=0 ):
     #   Fetches the 2D field "ncvar" at time record kt into "ncfile"
     '''
     if ldebug: print(' *** [GetModel2DVar()] Reading model "'+ncvar+'" at record kt='+str(kt)+' in '+ncfile)
-    id_f = Dataset(ncfile)
-    nb_dim = len(id_f.variables[ncvar].dimensions)
+    id_f = xr.open_zarr(ncfile)
+    nb_dim = len(id_f[ncvar].dims)
     if nb_dim==3:
-        x2d = id_f.variables[ncvar][kt,:,:]
+        x2d = id_f[ncvar][kt,:,:]
     elif nb_dim==4:
-        x2d = id_f.variables[ncvar][kt,0,:,:] ; # taking surface field!
+        x2d = id_f[ncvar][kt,0,:,:] ; # taking surface field!
     else: MsgExit('FIX ME! Model "'+ncvar+'" has a weird number of dimensions: '+str(nb_dim))
     id_f.close()
     if ldebug: print('')
@@ -221,14 +217,13 @@ def GetSatCoor( ncfile, what,  kt1=0, kt2=0 ):
     elif what == 'longitude': ii = 1
     else: MsgExit('"what" argument of "GetSatCoor()" only supports "latitude" and "longitude"')
     #
-    id_f = Dataset(ncfile)
-    list_var = list(id_f.variables.keys())
+    id_f = xr.open_zarr(ncfile)
     for ncvar in cv_coor_test[ii,:]:
-        if ncvar in list_var: break
+        if ncvar in id_f.coords: break
     if ncvar == 'none': MsgExit('could not find '+what+' array into satellite file (possible fix: "cv_coor_test" in "GetSatCoor()")')
     #
     if ldebug: print(' *** [GetSatCoor()] reading "'+ncvar+'" in '+ncfile+' ...')
-    nb_dim = len(id_f.variables[ncvar].dimensions)
+    nb_dim = len(id_f[ncvar].dims)
     if nb_dim==1:
         if kt1>0 and kt2>0:
             if kt1>=kt2: MsgExit('mind the indices when calling GetSatCoor()')
@@ -242,7 +237,7 @@ def GetSatCoor( ncfile, what,  kt1=0, kt2=0 ):
     id_f.close()
     if ldebug: print('   => '+str(vwhat.size)+' records '+cc+'\n')
     #
-    return vwhat
+    return vwhat.values
 
 
 def GetSatSSH( ncfile, ncvar,  kt1=0, kt2=0, ikeep=[] ):
@@ -253,12 +248,12 @@ def GetSatSSH( ncfile, ncvar,  kt1=0, kt2=0, ikeep=[] ):
     #          (ikeep is an array obtained as the result of a "numpy.where()"
     '''
     if ldebug: print(' *** [GetSatSSH()] Reading satellite "'+ncvar+' in '+ncfile)
-    id_f = Dataset(ncfile)
+    id_f = xr.open_zarr(ncfile)
     if kt1>0 and kt2>0:
         if kt1>=kt2: MsgExit('mind the indices when calling GetSatSSH()')
-        vssh = id_f.variables[ncvar][kt1:kt2+1]
+        vssh = id_f[ncvar][kt1:kt2+1]
     else:
-        vssh = id_f.variables[ncvar][:]
+        vssh = id_f[ncvar][:]
     id_f.close()
     if len(ikeep) > 0:
         # Keep specified part of the data
@@ -275,33 +270,26 @@ def GetSatSSH( ncfile, ncvar,  kt1=0, kt2=0, ikeep=[] ):
 
 
 def Save2Dfield( ncfile, XFLD, xlon=[], xlat=[], name='field', unit='', long_name='', mask=[], clon='nav_lon', clat='nav_lat' ):
-    #LOLO IMPROVE !
+    #Mask
     (nj,ni) = nmp.shape(XFLD)
-    f_o = Dataset(ncfile, 'w', format='NETCDF4')
-    f_o.createDimension('y', nj)
-    f_o.createDimension('x', ni)
-    if (xlon != []) and (xlat != []):
-        if (xlon.shape == (nj,ni)) and (xlon.shape == xlat.shape):
-            id_lon  = f_o.createVariable(clon ,'f4',('y','x',), zlib=True, complevel=5)
-            id_lat  = f_o.createVariable(clat ,'f4',('y','x',), zlib=True, complevel=5)
-            id_lon[:,:] = xlon[:,:]
-            id_lat[:,:] = xlat[:,:]
-    id_fld  = f_o.createVariable(name ,'f4',('y','x',), zlib=True, complevel=5)
-    if long_name != '': id_fld.long_name = long_name
-    if unit      != '': id_fld.units     = unit
     if nmp.shape(mask) != (0,):
         xtmp = nmp.zeros((nj,ni))
         xtmp[:,:] = XFLD[:,:]
         idx_land = nmp.where( mask < 0.5)
         xtmp[idx_land] = nmp.nan
-        id_fld[:,:] = xtmp[:,:]
-        del xtmp
     else:
-        id_fld[:,:] = XFLD[:,:]
-    f_o.about = cabout_nc
-    f_o.close()
-    return
+        xtmp=XFLD
 
+    #Turn fields into dataset
+    foo=xr.DataArray(xtmp,dims=['y','x'])
+    foo.name=name
+    if unit      != '': foo.attrs["units"] = unit
+    if long_name != '': foo.attrs["long_name"] = long_name
+
+    #Save to netcdf
+    ds=foo.to_dataset()
+    ds.attrs=dict(about=cabout_nc)
+    ds.to_netcdf(ncfile,'w', format='NETCDF4')
 
 def SaveTimeSeries( ivt, xd, vvar, ncfile, time_units='unknown', vunits=[], vlnm=[], missing_val=-9999. ):
     '''
@@ -319,23 +307,38 @@ def SaveTimeSeries( ivt, xd, vvar, ncfile, time_units='unknown', vunits=[], vlnm
     l_f_units = (nmp.shape(vunits)==(Nf,)) ; l_f_lnm = (nmp.shape(vlnm)==(Nf,))
     #
     print('\n *** About to write file "'+ncfile+'"...')
-    f_o = Dataset(ncfile, 'w', format='NETCDF4')
-    f_o.createDimension('time', None)
-    id_t = f_o.createVariable('time','f8',('time',))
-    id_t.calendar = 'gregorian' ; id_t.units = time_units
-    #
-    id_d = []
-    for jf in range(Nf):
-        id_d.append( f_o.createVariable(vvar[jf],'f4',('time',), fill_value=missing_val, zlib=True, complevel=5) )
-        if l_f_units: id_d[jf].units   = vunits[jf]
-        if l_f_lnm:   id_d[jf].long_name = vlnm[jf]
-    #
-    print('   ==> writing "time"')
-    id_t[:] = ivt.astype(nmp.float64)
-    for jf in range(Nf):
-        print('   ==> writing "'+vvar[jf]+'"')
-        id_d[jf][:] = xd[jf,:]
-    f_o.about = cabout_nc
-    f_o.close()
+
+    if Nf == 1:
+      foo=xr.DataArray(xd,dims=['time'],coords=[ivt.astype(nmp.float64)])
+      foo.name=vvar
+      foo.attrs["units"] = vunits
+      foo.attrs["long_name"] = vlnm
+      ds=foo.to_dataset(name = vvar)
+      footime=xr.DataArray(ivt, dims=['time'],coords=[ivt.astype(nmp.float64)])
+      footime.attrs["units"] =time_units
+      footime.attrs["calendar"] = 'gregorian'
+      ds['time']=footime
+      ds.attrs=dict(about=cabout_nc)
+      ds.to_netcdf(ncfile,'w', format='NETCDF4')
+    else:
+      foo0=xr.DataArray(xd[0],dims=['time'],coords=[ivt.astype(nmp.float64)])
+      foo0.name=vvar[0]
+      foo0.attrs["units"] = vunits[0]
+      foo0.attrs["long_name"] = vlnm[0]
+      ds=foo0.to_dataset(name = vvar[0])
+      footime=xr.DataArray(ivt, dims=['time'],coords=[ivt.astype(nmp.float64)])
+      footime.attrs["units"] =time_units
+      footime.attrs["calendar"] = 'gregorian'
+      ds['time']=footime
+      for jf in range(1,Nf):
+        foo=xr.DataArray(xd[jf],dims=['time'],coords=[ivt.astype(nmp.float64)])
+        foo.name=vvar[jf]
+        foo.attrs["units"] = vunits[jf]
+        foo.attrs["long_name"] = vlnm[jf]
+        ds[vvar[jf]]=foo
+      ds.attrs=dict(about=cabout_nc)
+      ds.to_netcdf(ncfile,'w', format='NETCDF4')
+
+
     print(' *** "'+ncfile+'" successfully written!\n')
     return 0
